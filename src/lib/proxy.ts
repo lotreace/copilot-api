@@ -6,6 +6,7 @@ import { createNtlmDispatcher, type NtlmCredentials } from "./proxy-ntlm"
 
 export interface ProxyConfig {
   proxyType: "basic" | "ntlm"
+  proxyUrl?: string
   credentials?: NtlmCredentials
 }
 
@@ -85,16 +86,17 @@ export function initProxy(config: ProxyConfig): void {
         )
       }
 
-      // For NTLM, read the proxy URL from environment
+      // Read proxy URL from config, then fall back to environment
       const proxyUrl =
-        process.env.HTTPS_PROXY
+        config.proxyUrl
+        || process.env.HTTPS_PROXY
         || process.env.https_proxy
         || process.env.HTTP_PROXY
         || process.env.http_proxy
 
       if (!proxyUrl) {
         throw new Error(
-          "NTLM proxy requires HTTPS_PROXY or HTTP_PROXY environment variable to be set",
+          "NTLM proxy requires --proxy-url or HTTPS_PROXY/HTTP_PROXY environment variable to be set",
         )
       }
 

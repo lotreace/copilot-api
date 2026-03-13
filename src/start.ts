@@ -28,6 +28,7 @@ interface RunServerOptions {
   showToken: boolean
   proxyEnv: boolean
   proxyType: "basic" | "ntlm"
+  proxyUrl?: string
   proxyCredentials?: string
 }
 
@@ -68,7 +69,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       options.proxyType === "ntlm" ?
         parseNtlmCredentials(options.proxyCredentials)
       : undefined
-    initProxy({ proxyType: options.proxyType, credentials })
+    initProxy({
+      proxyType: options.proxyType,
+      proxyUrl: options.proxyUrl,
+      credentials,
+    })
   }
 
   if (options.verbose) {
@@ -229,6 +234,11 @@ export const start = defineCommand({
       description:
         "Proxy authentication type: basic or ntlm (requires --proxy-env)",
     },
+    "proxy-url": {
+      type: "string",
+      description:
+        "Proxy server URL, e.g. http://proxy.corp.com:8080 (falls back to HTTPS_PROXY/HTTP_PROXY env vars)",
+    },
     "proxy-credentials": {
       type: "string",
       description: String.raw`NTLM proxy credentials in domain\username:password format (or use PROXY_DOMAIN/PROXY_USER/PROXY_PASS env vars)`,
@@ -252,6 +262,7 @@ export const start = defineCommand({
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
       proxyType: args["proxy-type"] as "basic" | "ntlm",
+      proxyUrl: args["proxy-url"],
       proxyCredentials: args["proxy-credentials"],
     })
   },
