@@ -1,49 +1,29 @@
+import {
+  createType1Message,
+  createType3Message,
+  extractNtlmMessageFromAuthenticateHeader,
+  parseType2Message,
+} from "@node-ntlm/core"
 import { describe, test, expect, afterAll, beforeAll } from "bun:test"
 import net from "node:net"
-import ntlm from "ntlm-client"
 
 // ---- Unit tests for NTLM message construction ----
 
-describe("ntlm-client message construction", () => {
+describe("@node-ntlm/core message construction", () => {
   test("createType1Message returns NTLM prefixed base64 string", () => {
-    const msg = ntlm.createType1Message("WORKSTATION", "DOMAIN")
+    const msg = createType1Message({
+      domain: "DOMAIN",
+      workstation: "WORKSTATION",
+    })
     expect(msg).toMatch(/^NTLM [A-Za-z0-9+/=]+$/)
   })
 
-  test("createType1Message works without arguments", () => {
-    const msg = ntlm.createType1Message()
+  test("createType1Message works with empty strings", () => {
+    const msg = createType1Message({ domain: "", workstation: "" })
     expect(msg).toMatch(/^NTLM [A-Za-z0-9+/=]+$/)
   })
 
-  test("decodeType2Message parses a valid Type 2 message", () => {
-    // Create a minimal valid Type 2 message
-    // NTLMSSP signature + type 2 + minimal fields
-    const buf = Buffer.alloc(56)
-    buf.write("NTLMSSP\0", 0, 8, "ascii") // signature
-    buf.writeUInt32LE(2, 8) // message type
-    // Target name: empty
-    buf.writeUInt16LE(0, 12) // target name length
-    buf.writeUInt16LE(0, 14) // target name max length
-    buf.writeUInt32LE(0, 16) // target name offset
-    // Flags: NTLM key + OEM
-    buf.writeUInt32LE(0x00000202, 20)
-    // Challenge (8 bytes at offset 24)
-    buf.write("ABCDEFGH", 24, 8, "ascii")
-
-    const base64 = buf.toString("base64")
-    const decoded = ntlm.decodeType2Message(`NTLM ${base64}`)
-
-    expect(decoded).toBeDefined()
-    expect(decoded.challenge).toBeInstanceOf(Buffer)
-    expect(decoded.challenge.length).toBe(8)
-  })
-
-  test("decodeType2Message throws on invalid input", () => {
-    expect(() => ntlm.decodeType2Message("NTLM invalid===")).toThrow()
-  })
-
-  test("createType3Message returns NTLM prefixed base64 string", () => {
-    // Build a minimal Type 2 to feed into Type 3
+  test("parseType2Message parses a valid Type 2 message", () => {
     const buf = Buffer.alloc(56)
     buf.write("NTLMSSP\0", 0, 8, "ascii")
     buf.writeUInt32LE(2, 8)
@@ -53,14 +33,75 @@ describe("ntlm-client message construction", () => {
     buf.writeUInt32LE(0x00000202, 20)
     buf.write("ABCDEFGH", 24, 8, "ascii")
 
-    const type2 = ntlm.decodeType2Message(`NTLM ${buf.toString("base64")}`)
-    const type3 = ntlm.createType3Message(
-      type2,
-      "testuser",
-      "testpass",
-      "WORKSTATION",
-      "DOMAIN",
+    // parseType2Message expects "NTLM <base64>" format
+    const decoded = parseType2Message(`NTLM ${buf.toString("base64")}`)
+
+    expect(decoded).toBeDefined()
+    expect(decoded.serverChallenge).toBeInstanceOf(Buffer)
+    expect(decoded.serverChallenge.length).toBe(8)
+  })
+
+  test("extractNtlmMessageFromAuthenticateHeader extracts token", () => {
+    const header =
+      "NTLM TlRMTVNTUAABAAAAB4IIogAAAAAAAAAAAAAAAAAAAAAGAbEdAAAADw=="
+    const token = extractNtlmMessageFromAuthenticateHeader(header)
+    expect(token).toBeDefined()
+    // Returns the full "NTLM <base64>" string, not just the base64 part
+    expect(token).toBe(
+      "NTLM TlRMTVNTUAABAAAAB4IIogAAAAAAAAAAAAAAAAAAAAAGAbEdAAAADw==",
     )
+  })
+
+  test("extractNtlmMessageFromAuthenticateHeader returns undefined for non-NTLM", () => {
+    expect(
+      extractNtlmMessageFromAuthenticateHeader("Basic realm=test"),
+    ).toBeUndefined()
+    expect(extractNtlmMessageFromAuthenticateHeader(null)).toBeUndefined()
+  })
+
+  test("createType3Message returns NTLM prefixed base64 string", () => {
+    const buf = Buffer.alloc(56)
+    buf.write("NTLMSSP\0", 0, 8, "ascii")
+    buf.writeUInt32LE(2, 8)
+    buf.writeUInt16LE(0, 12)
+    buf.writeUInt16LE(0, 14)
+    buf.writeUInt32LE(0, 16)
+    buf.writeUInt32LE(0x00000202, 20)
+    buf.write("ABCDEFGH", 24, 8, "ascii")
+
+    const type2 = parseType2Message(`NTLM ${buf.toString("base64")}`)
+    const type3 = createType3Message(type2, {
+      domain: "DOMAIN",
+      workstation: "WORKSTATION",
+      username: "testuser",
+      password: "testpass",
+    })
+
+    expect(type3).toMatch(/^NTLM [A-Za-z0-9+/=]+$/)
+  })
+
+  test("createType3Message handles missing targetInfo gracefully", () => {
+    // Build Type 2 without NegotiateTargetInfo flag
+    const buf = Buffer.alloc(56)
+    buf.write("NTLMSSP\0", 0, 8, "ascii")
+    buf.writeUInt32LE(2, 8)
+    buf.writeUInt16LE(0, 12)
+    buf.writeUInt16LE(0, 14)
+    buf.writeUInt32LE(0, 16)
+    // Flags WITHOUT NegotiateTargetInfo (0x00800000)
+    buf.writeUInt32LE(0x00000202, 20)
+    buf.write("ABCDEFGH", 24, 8, "ascii")
+
+    const type2 = parseType2Message(`NTLM ${buf.toString("base64")}`)
+    expect(type2.targetInfo).toBeUndefined()
+
+    // This should NOT throw (the old ntlm-client crashed here)
+    const type3 = createType3Message(type2, {
+      domain: "DOMAIN",
+      workstation: "WORKSTATION",
+      username: "testuser",
+      password: "testpass",
+    })
 
     expect(type3).toMatch(/^NTLM [A-Za-z0-9+/=]+$/)
   })
@@ -74,7 +115,6 @@ describe("NTLM proxy handshake with mock server", () => {
   const handshakeLog: Array<string> = []
 
   beforeAll(async () => {
-    // Create a mock proxy that implements the NTLM CONNECT handshake
     mockServer = net.createServer((socket) => {
       let step = 0
       let buffer = ""
@@ -82,14 +122,12 @@ describe("NTLM proxy handshake with mock server", () => {
       socket.on("data", (data) => {
         buffer += data.toString("ascii")
 
-        // Wait for complete HTTP request (headers end with \r\n\r\n)
         if (!buffer.includes("\r\n\r\n")) return
 
         const request = buffer
         buffer = ""
 
         if (step === 0) {
-          // Step 1: Expect CONNECT with Type 1 NTLM message
           const hasNtlm = /Proxy-Authorization: NTLM /i.test(request)
           handshakeLog.push(hasNtlm ? "type1-received" : "no-ntlm-header")
 
@@ -100,7 +138,6 @@ describe("NTLM proxy handshake with mock server", () => {
             return
           }
 
-          // Build a Type 2 challenge response
           const challengeBuf = Buffer.alloc(56)
           challengeBuf.write("NTLMSSP\0", 0, 8, "ascii")
           challengeBuf.writeUInt32LE(2, 8)
@@ -117,14 +154,12 @@ describe("NTLM proxy handshake with mock server", () => {
           step = 1
           handshakeLog.push("type2-sent")
         } else if (step === 1) {
-          // Step 2: Expect CONNECT with Type 3 NTLM message
           const type3Match = /Proxy-Authorization: NTLM ([A-Z0-9+/=]+)/i.exec(
             request,
           )
           if (type3Match) {
             handshakeLog.push("type3-received")
 
-            // Verify it's a valid NTLM Type 3 message
             const msgBuf = Buffer.from(type3Match[1], "base64")
             const sig = msgBuf.subarray(0, 8).toString("ascii")
             const msgType = msgBuf.readUInt32LE(8)
@@ -146,7 +181,6 @@ describe("NTLM proxy handshake with mock server", () => {
       })
     })
 
-    // Start listening on a random port
     await new Promise<void>((resolve) => {
       mockServer.listen(0, "127.0.0.1", () => {
         const addr = mockServer.address() as net.AddressInfo
@@ -166,7 +200,10 @@ describe("NTLM proxy handshake with mock server", () => {
     await new Promise<void>((resolve) => socket.on("connect", resolve))
 
     // Send Type 1
-    const type1 = ntlm.createType1Message("WORKSTATION", "DOMAIN")
+    const type1 = createType1Message({
+      domain: "DOMAIN",
+      workstation: "WORKSTATION",
+    })
     socket.write(
       `CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: ${type1}\r\n\r\n`,
     )
@@ -179,23 +216,27 @@ describe("NTLM proxy handshake with mock server", () => {
     expect(response1).toContain("407")
     expect(response1).toContain("Proxy-Authenticate: NTLM")
 
-    // Extract and decode Type 2
-    const ntlmMatch = /NTLM ([A-Z0-9+/=]+)/i.exec(response1)
-    expect(ntlmMatch).not.toBeNull()
+    // Extract Proxy-Authenticate header value from raw HTTP response
+    const authHeaderMatch = /Proxy-Authenticate: (.+)\r\n/i.exec(response1)
+    expect(authHeaderMatch).not.toBeNull()
 
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const type2 = ntlm.decodeType2Message(`NTLM ${ntlmMatch![1]}`)
+    const authHeader = authHeaderMatch![1]
+    const ntlmToken = extractNtlmMessageFromAuthenticateHeader(authHeader)
+    expect(ntlmToken).toBeDefined()
+
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const type2 = parseType2Message(ntlmToken!)
     expect(type2).toBeDefined()
-    expect(type2.challenge).toBeInstanceOf(Buffer)
+    expect(type2.serverChallenge).toBeInstanceOf(Buffer)
 
     // Send Type 3
-    const type3 = ntlm.createType3Message(
-      type2,
-      "testuser",
-      "testpass",
-      "WORKSTATION",
-      "DOMAIN",
-    )
+    const type3 = createType3Message(type2, {
+      domain: "DOMAIN",
+      workstation: "WORKSTATION",
+      username: "testuser",
+      password: "testpass",
+    })
     socket.write(
       `CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: ${type3}\r\n\r\n`,
     )

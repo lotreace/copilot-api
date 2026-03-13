@@ -1,7 +1,12 @@
+import {
+  createType1Message,
+  createType3Message,
+  extractNtlmMessageFromAuthenticateHeader,
+  parseType2Message,
+} from "@node-ntlm/core"
 import consola from "consola"
 import net from "node:net"
 import tls from "node:tls"
-import ntlm from "ntlm-client"
 import { Agent, type Dispatcher } from "undici"
 
 export interface NtlmCredentials {
@@ -139,10 +144,10 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
 
   // Step 1: Connect to proxy and send Type 1 (negotiate) message
   let socket = await connectToProxy(proxyHost, proxyPort)
-  const type1 = ntlm.createType1Message(
-    credentials.workstation,
-    credentials.domain,
-  )
+  const type1 = createType1Message({
+    domain: credentials.domain,
+    workstation: credentials.workstation ?? "",
+  })
   consola.debug("NTLM tunnel: sending Type 1 negotiate message")
   sendConnect({ socket, host: targetHost, port: targetPort, authHeader: type1 })
 
@@ -182,9 +187,16 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   }
 
   // Decode the Type 2 challenge
-  const type2 = ntlm.decodeType2Message(proxyAuth)
+  const ntlmToken = extractNtlmMessageFromAuthenticateHeader(proxyAuth)
+  if (!ntlmToken) {
+    socket.destroy()
+    throw new Error(
+      "Could not extract NTLM token from Proxy-Authenticate header",
+    )
+  }
+  const type2 = parseType2Message(ntlmToken)
   consola.debug(
-    `NTLM tunnel: received Type 2 challenge (target: ${type2.targetName})`,
+    `NTLM tunnel: received Type 2 challenge (target: ${type2.targetName.toString("utf8")})`,
   )
 
   // Step 3: Some proxies close the socket after 407 — detect and reconnect
@@ -195,13 +207,12 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   }
 
   // Send Type 3 (authenticate) message
-  const type3 = ntlm.createType3Message(
-    type2,
-    credentials.username,
-    credentials.password,
-    credentials.workstation,
-    credentials.domain,
-  )
+  const type3 = createType3Message(type2, {
+    domain: credentials.domain,
+    workstation: credentials.workstation ?? "",
+    username: credentials.username,
+    password: credentials.password,
+  })
   consola.debug("NTLM tunnel: sending Type 3 authenticate message")
   sendConnect({ socket, host: targetHost, port: targetPort, authHeader: type3 })
 
