@@ -105,7 +105,7 @@ interface ConnectOptions {
 }
 
 function sendConnect(opts: ConnectOptions): void {
-  let req = `CONNECT ${opts.host}:${opts.port} HTTP/1.1\r\nHost: ${opts.host}:${opts.port}\r\n`
+  let req = `CONNECT ${opts.host}:${opts.port} HTTP/1.1\r\nHost: ${opts.host}:${opts.port}\r\nProxy-Connection: keep-alive\r\n`
   if (opts.authHeader) {
     req += `Proxy-Authorization: ${opts.authHeader}\r\n`
   }
@@ -134,16 +134,18 @@ interface TunnelOptions {
   targetHost: string
   targetPort: number
   credentials: NtlmCredentials
+  _retryCount?: number
 }
 
 async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   const { proxyHost, proxyPort, targetHost, targetPort, credentials } = opts
+  const retryCount = opts._retryCount ?? 0
   consola.debug(
     `NTLM tunnel: connecting to proxy ${proxyHost}:${proxyPort} for ${targetHost}:${targetPort}`,
   )
 
   // Step 1: Connect to proxy and send Type 1 (negotiate) message
-  let socket = await connectToProxy(proxyHost, proxyPort)
+  const socket = await connectToProxy(proxyHost, proxyPort)
   const type1 = createType1Message({
     domain: credentials.domain,
     workstation: credentials.workstation ?? "",
@@ -199,11 +201,21 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
     `NTLM tunnel: received Type 2 challenge (target: ${type2.targetName.toString("utf8")})`,
   )
 
-  // Step 3: Some proxies close the socket after 407 — detect and reconnect
+  // Step 3: Some proxies close the socket after 407 despite keep-alive.
+  // NTLM is connection-oriented — the Type 2 challenge is bound to the TCP
+  // connection, so if the socket is dead we must restart from Type 1.
   const socketAlive = !socket.destroyed && socket.readable && socket.writable
   if (!socketAlive) {
-    consola.debug("NTLM tunnel: proxy closed socket after 407 — reconnecting")
-    socket = await connectToProxy(proxyHost, proxyPort)
+    if (retryCount >= 1) {
+      throw new Error(
+        "Proxy keeps closing connection after 407 — NTLM handshake cannot complete",
+      )
+    }
+    consola.debug(
+      "NTLM tunnel: proxy closed socket after 407 — restarting handshake on new connection",
+    )
+    socket.destroy()
+    return createNtlmTunnel({ ...opts, _retryCount: retryCount + 1 })
   }
 
   // Send Type 3 (authenticate) message
@@ -235,16 +247,18 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   }
 
   consola.debug("NTLM tunnel: connection established, upgrading to TLS")
+  return upgradeToTls(socket, targetHost)
+}
 
-  // Step 5: Wrap the raw socket with TLS
-  const tlsSocket = tls.connect({
-    socket,
-    servername: targetHost,
-  })
+function upgradeToTls(
+  socket: net.Socket,
+  servername: string,
+): Promise<tls.TLSSocket> {
+  const tlsSocket = tls.connect({ socket, servername })
 
   return new Promise((resolve, reject) => {
     tlsSocket.on("secureConnect", () => {
-      consola.debug(`NTLM tunnel: TLS handshake complete for ${targetHost}`)
+      consola.debug(`NTLM tunnel: TLS handshake complete for ${servername}`)
       resolve(tlsSocket)
     })
     tlsSocket.on("error", (err: Error) => {
