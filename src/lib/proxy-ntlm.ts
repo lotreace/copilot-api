@@ -6,6 +6,7 @@ import {
 } from "@node-ntlm/core"
 import consola from "consola"
 import net from "node:net"
+import os from "node:os"
 import tls from "node:tls"
 import { Agent, type Dispatcher } from "undici"
 
@@ -146,11 +147,14 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
 
   // Step 1: Connect to proxy and send Type 1 (negotiate) message
   const socket = await connectToProxy(proxyHost, proxyPort)
+  const workstation = credentials.workstation ?? os.hostname()
   const type1 = createType1Message({
     domain: credentials.domain,
-    workstation: credentials.workstation ?? "",
+    workstation,
   })
-  consola.debug("NTLM tunnel: sending Type 1 negotiate message")
+  consola.debug(
+    `NTLM tunnel: sending Type 1 negotiate (domain: ${credentials.domain}, workstation: ${workstation}, user: ${credentials.username})`,
+  )
   sendConnect({ socket, host: targetHost, port: targetPort, authHeader: type1 })
 
   // Step 2: Read the 407 response with Type 2 challenge
@@ -198,7 +202,7 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   }
   const type2 = parseType2Message(ntlmToken)
   consola.debug(
-    `NTLM tunnel: received Type 2 challenge (target: ${type2.targetName.toString("utf8")})`,
+    `NTLM tunnel: received Type 2 challenge (target: ${type2.targetName.toString("utf8")}, flags: 0x${type2.negotiateFlags.toString(16)}, hasTargetInfo: ${type2.targetInfo !== undefined})`,
   )
 
   // Step 3: Some proxies close the socket after 407 despite keep-alive.
@@ -221,7 +225,7 @@ async function createNtlmTunnel(opts: TunnelOptions): Promise<tls.TLSSocket> {
   // Send Type 3 (authenticate) message
   const type3 = createType3Message(type2, {
     domain: credentials.domain,
-    workstation: credentials.workstation ?? "",
+    workstation,
     username: credentials.username,
     password: credentials.password,
   })
