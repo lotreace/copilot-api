@@ -13,7 +13,7 @@ export interface State {
   showToken: boolean
 
   // Proxy configuration
-  proxyType?: "basic" | "ntlm"
+  proxyType?: "basic" | "ntlm" | "negotiate"
   proxyDomain?: string
   proxyUser?: string
   proxyPass?: string

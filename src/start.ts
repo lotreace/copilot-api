@@ -27,7 +27,7 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
-  proxyType: "basic" | "ntlm"
+  proxyType: "basic" | "ntlm" | "negotiate"
   proxyUrl?: string
   proxyCredentials?: string
 }
@@ -232,7 +232,7 @@ export const start = defineCommand({
       type: "string",
       default: "basic",
       description:
-        "Proxy authentication type: basic or ntlm (requires --proxy-env)",
+        "Proxy authentication type: basic, ntlm, or negotiate (requires --proxy-env)",
     },
     "proxy-url": {
       type: "string",
@@ -261,7 +261,7 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
-      proxyType: args["proxy-type"] as "basic" | "ntlm",
+      proxyType: args["proxy-type"] as "basic" | "ntlm" | "negotiate",
       proxyUrl: args["proxy-url"],
       proxyCredentials: args["proxy-credentials"],
     })

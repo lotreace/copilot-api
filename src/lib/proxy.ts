@@ -2,10 +2,11 @@ import consola from "consola"
 import { getProxyForUrl } from "proxy-from-env"
 import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici"
 
+import { createNegotiateDispatcher } from "./proxy-negotiate"
 import { createNtlmDispatcher, type NtlmCredentials } from "./proxy-ntlm"
 
 export interface ProxyConfig {
-  proxyType: "basic" | "ntlm"
+  proxyType: "basic" | "ntlm" | "negotiate"
   proxyUrl?: string
   credentials?: NtlmCredentials
 }
@@ -65,41 +66,54 @@ function createBasicProxyDispatcher() {
 }
 
 /**
+ * Read proxy URL from config or environment variables.
+ */
+function resolveProxyUrl(config: ProxyConfig): string {
+  const proxyUrl =
+    config.proxyUrl
+    || process.env.HTTPS_PROXY
+    || process.env.https_proxy
+    || process.env.HTTP_PROXY
+    || process.env.http_proxy
+
+  if (!proxyUrl) {
+    throw new Error(
+      "Proxy requires --proxy-url or HTTPS_PROXY/HTTP_PROXY environment variable to be set",
+    )
+  }
+
+  return proxyUrl
+}
+
+/**
  * Initialize proxy support with the given configuration.
- * For NTLM, a single proxy URL is read from HTTPS_PROXY (or HTTP_PROXY).
  */
 export function initProxy(config: ProxyConfig): void {
   if (typeof Bun !== "undefined") {
-    if (config.proxyType === "ntlm") {
+    if (config.proxyType !== "basic") {
       consola.warn(
-        "NTLM proxy is not supported under Bun — run with Node.js instead",
+        `${config.proxyType} proxy is not supported under Bun — run with Node.js instead`,
       )
     }
     return
   }
 
   try {
-    if (config.proxyType === "ntlm") {
+    if (config.proxyType === "negotiate") {
+      const proxyUrl = resolveProxyUrl(config)
+      const dispatcher = createNegotiateDispatcher(proxyUrl)
+      setGlobalDispatcher(dispatcher as unknown as Dispatcher)
+      consola.debug(
+        `Negotiate proxy configured via ${new URL(proxyUrl).host} (using system credentials)`,
+      )
+    } else if (config.proxyType === "ntlm") {
       if (!config.credentials) {
         throw new Error(
           "NTLM proxy requires credentials — use --proxy-credentials or PROXY_DOMAIN/PROXY_USER/PROXY_PASS env vars",
         )
       }
 
-      // Read proxy URL from config, then fall back to environment
-      const proxyUrl =
-        config.proxyUrl
-        || process.env.HTTPS_PROXY
-        || process.env.https_proxy
-        || process.env.HTTP_PROXY
-        || process.env.http_proxy
-
-      if (!proxyUrl) {
-        throw new Error(
-          "NTLM proxy requires --proxy-url or HTTPS_PROXY/HTTP_PROXY environment variable to be set",
-        )
-      }
-
+      const proxyUrl = resolveProxyUrl(config)
       const dispatcher = createNtlmDispatcher(proxyUrl, config.credentials)
       setGlobalDispatcher(dispatcher as unknown as Dispatcher)
       consola.debug(
@@ -111,8 +125,7 @@ export function initProxy(config: ProxyConfig): void {
       consola.debug("HTTP proxy configured from environment (per-URL)")
     }
   } catch (err) {
-    if (config.proxyType === "ntlm") {
-      // NTLM errors should be surfaced, not silently skipped
+    if (config.proxyType !== "basic") {
       throw err
     }
     consola.debug("Proxy setup skipped:", err)
