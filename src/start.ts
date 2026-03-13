@@ -6,8 +6,10 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import type { NtlmCredentials } from "./lib/proxy-ntlm"
+
 import { ensurePaths } from "./lib/paths"
-import { initProxyFromEnv } from "./lib/proxy"
+import { initProxy } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { setupCopilotToken, setupGitHubToken } from "./lib/token"
@@ -25,11 +27,48 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  proxyType: "basic" | "ntlm"
+  proxyCredentials?: string
+}
+
+function parseNtlmCredentials(raw?: string): NtlmCredentials {
+  if (raw) {
+    const backslashIdx = raw.indexOf("\\")
+    const colonIdx = raw.indexOf(":", backslashIdx !== -1 ? backslashIdx : 0)
+
+    if (backslashIdx === -1 || colonIdx === -1) {
+      throw new Error(
+        String.raw`Invalid --proxy-credentials format. Expected: domain\username:password`,
+      )
+    }
+
+    return {
+      domain: raw.slice(0, Math.max(0, backslashIdx)),
+      username: raw.slice(backslashIdx + 1, colonIdx),
+      password: raw.slice(Math.max(0, colonIdx + 1)),
+    }
+  }
+
+  const domain = process.env.PROXY_DOMAIN
+  const username = process.env.PROXY_USER
+  const password = process.env.PROXY_PASS
+
+  if (!domain || !username || !password) {
+    throw new Error(
+      String.raw`NTLM proxy requires credentials. Use --proxy-credentials domain\username:password or set PROXY_DOMAIN, PROXY_USER, PROXY_PASS environment variables`,
+    )
+  }
+
+  return { domain, username, password }
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
   if (options.proxyEnv) {
-    initProxyFromEnv()
+    const credentials =
+      options.proxyType === "ntlm" ?
+        parseNtlmCredentials(options.proxyCredentials)
+      : undefined
+    initProxy({ proxyType: options.proxyType, credentials })
   }
 
   if (options.verbose) {
@@ -184,6 +223,16 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
+    "proxy-type": {
+      type: "string",
+      default: "basic",
+      description:
+        "Proxy authentication type: basic or ntlm (requires --proxy-env)",
+    },
+    "proxy-credentials": {
+      type: "string",
+      description: String.raw`NTLM proxy credentials in domain\username:password format (or use PROXY_DOMAIN/PROXY_USER/PROXY_PASS env vars)`,
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -202,6 +251,8 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
+      proxyType: args["proxy-type"] as "basic" | "ntlm",
+      proxyCredentials: args["proxy-credentials"],
     })
   },
 })

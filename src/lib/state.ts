@@ -12,6 +12,12 @@ export interface State {
   rateLimitWait: boolean
   showToken: boolean
 
+  // Proxy configuration
+  proxyType?: "basic" | "ntlm"
+  proxyDomain?: string
+  proxyUser?: string
+  proxyPass?: string
+
   // Rate limiting configuration
   rateLimitSeconds?: number
   lastRequestTimestamp?: number
